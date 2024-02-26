@@ -6,7 +6,7 @@
 ;; Author: Shen, Jen-Chieh <jcs090218@gmail.com>
 ;; URL: https://github.com/jcs-elpa/reveal-in-folder
 ;; Version: 0.1.2
-;; Package-Requires: ((emacs "24.3") (f "0.20.0") (s "1.12.0"))
+;; Package-Requires: ((emacs "24.4") (compat "28.1"))
 ;; Keywords: convenience folder finder reveal file explorer
 
 ;; This file is NOT part of GNU Emacs.
@@ -26,73 +26,72 @@
 
 ;;; Commentary:
 ;;
-;; Reveal current file/directory in folder.
+;; Reveal current file/directory in the system's file manager.
 ;;
 
 ;;; Code:
 
-(require 'f)
+(require 'compat)
 (require 'ffap)
-(require 's)
 
 (defgroup reveal-in-folder nil
-  "Reveal current file/directory in folder."
+  "Open the current file/directory in the system's file manager."
   :prefix "reveal-in-folder-"
   :group 'tool
   :link '(url-link :tag "Repository" "https://github.com/jcs-elpa/reveal-in-folder"))
 
 (defcustom reveal-in-folder-select-file t
-  "Select the file when shown in file manager."
+  "Select the file when shown in the file manager.
+If NIL, only open the directory."
   :type 'boolean
   :group 'reveal-in-folder)
 
-(defun reveal-in-folder--safe-execute-p (in-cmd)
-  "Correct way to check if IN-CMD execute with or without errors."
+(defun reveal-in-folder--execute (in-cmd)
+  "Execute IN-CMD in the shell without visible output.
+Return T if the command executed without error, NIL otherwise."
   (let ((inhibit-message t) (message-log-max nil))
     (= 0 (shell-command in-cmd))))
 
 ;;;###autoload
-(defun reveal-in-folder-open (path)
-  "Reveal folder in PATH."
-  (let ((default-directory
-         (if path (f-dirname (expand-file-name path)) default-directory))
-        (buf-name (if (and reveal-in-folder-select-file path)
-                      (shell-quote-argument (expand-file-name path))
-                    nil))
-        cmd)
+(defun reveal-in-folder-open (filename)
+  "Select FILENAME in the system's file manager.
+If `reveal-in-folder-select-file-name' is NIL, open the
+containing folder without selecting the file.  If FILENAME is
+NIL, open `default-directory'."
+  (let ((safe-filename (if (and reveal-in-folder-select-file filename)
+                           (shell-quote-argument (expand-file-name filename))
+                         nil))
+        (safe-dirname (shell-quote-argument
+                       (if filename
+                           (file-name-directory (expand-file-name filename))
+                         default-directory))))
     (cond
      ;; Windows
      ((memq system-type '(cygwin windows-nt ms-dos))
-      (cond (buf-name
-             (setq buf-name (s-replace "/" "\\" buf-name)
-                   cmd (format "explorer /select,%s" buf-name)))
-            ((ignore-errors (file-directory-p path))
-             (setq path (s-replace "/" "\\" path)
-                   cmd (format "explorer /select,%s" path)))
-            (t (setq cmd "explorer ."))))
+      (reveal-in-folder--execute
+       ;; Windows handles file names with spaces itself; don't "double-quote" the argument
+       (format "explorer /select,%s"
+               (string-replace "/" "\\" (or safe-filename safe-dirname)))))
      ;; macOS
      ((eq system-type 'darwin)
-      (cond (buf-name
-             (setq cmd (format "open -R %s" buf-name)))
-            ((ignore-errors (file-directory-p path))
-             (setq cmd (format "open -R %s" path)))
-            (t (setq cmd "open ."))))
-     ;; Linux
-     ((eq system-type 'gnu/linux)
-      (setq cmd "xdg-open .")
-      ;; TODO: I don't think Linux has defualt way to do it across all distro.
-      )
-     ;; BSD
-     ((eq system-type 'berkeley-unix)
-      ;; TODO: Not sure what else command do I need to make it work in BSD.
-      (setq cmd "open .")
-      (cond (buf-name
-             (setq cmd (format "open -R %s" buf-name)))
-            ((ignore-errors (file-directory-p path))
-             (setq cmd (format "open -R %s" path)))
-            (t (setq cmd "open ."))))
-     (t (error "[ERROR] Unknown Operating System type")))
-    (when cmd (reveal-in-folder--safe-execute-p cmd))))
+      (reveal-in-folder--execute (format "open -R \"%s\"" (or safe-filename safe-dirname))))
+     ;; Linux and other unices
+     ((memq system-type '(gnu gnu/linux gnu/kfreebsd berkeley-unix aix hpux usg-unix-v))
+      (let ((xdg-open-available (= 0 (shell-command "type xdg-open")))
+            (desktop-environment (getenv "XDG_CURRENT_DESKTOP")))
+        (if (not xdg-open-available)
+            (error "Could not find xdg-open program, cannot open directory in file browser")
+          ;; need to do this in all cases, otherwise the calls to the
+          ;; file manager below will block
+          (reveal-in-folder--execute (format "xdg-open \"%s\"" safe-dirname))
+          (when safe-filename
+            (cond
+             ((equal desktop-environment "GNOME")
+              (reveal-in-folder--execute "nautilus --select \"%s\"" safe-filename))
+             ((equal desktop-environment "KDE")
+              (reveal-in-folder--execute "dolphin --select \"%s\"" safe-filename))
+             (t (message "Don't know how to select file in desktop environment %s" desktop-environment)))))))
+     (t (error "[ERROR] Unknown Operating System type %s" system-type)))))
 
 ;;;###autoload
 (defun reveal-in-folder-at-point ()
